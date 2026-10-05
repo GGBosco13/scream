@@ -127,14 +127,24 @@ export default function StaffDashboard() {
   // =====================
   const joinDailyRoom = async (roomName) => {
     try {
+      // Get a join token from the server
+      const res = await fetch(`${API_URL}/api/daily/staff-join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to get room access');
+
       const daily = new Daily();
       dailyRef.current = daily;
       roomNameRef.current = roomName;
 
-      await daily.join(
-        `https://api.daily.co/apps/meetings/rooms/${roomName}`,
-        { video: false, audio: true }
-      );
+      await daily.join(data.roomUrl, {
+        video: false,
+        audio: true,
+        token: data.token,
+      });
 
       setCurrentCallId(roomName);
       setCurrentCallDuration(0);

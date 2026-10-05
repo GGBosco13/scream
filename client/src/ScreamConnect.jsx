@@ -74,17 +74,20 @@ export default function ScreamConnect() {
       setStatus('connecting');
       setStatusMessage('Establishing anonymous connection...');
 
-      // 2. Request a room from the server
+      // 2. Request a room from the server (creates Daily room + join token)
       const res = await fetch(`${API_URL}/api/daily/join-room`, { method: 'POST' });
-      const { roomName } = await res.json();
+      const roomData = await res.json();
+      if (!res.ok) throw new Error(roomData.error || 'Failed to create room');
+      const { roomName, roomUrl, token } = roomData;
       roomNameRef.current = roomName;
 
-      // 3. Create a Daily room and join with mic on
+      // 3. Join the Daily room with the token
       const daily = new Daily();
       dailyRef.current = daily;
-      await daily.join(`https://api.daily.co/apps/meetings/rooms/${roomName}`, {
+      await daily.join(roomUrl, {
         video: false,
         audio: true,
+        token,
       });
 
       // 3. Connect WebSocket for signaling (queue + routing)

@@ -91,7 +91,7 @@ class CallManager {
   // Call Routing
   // =====================
 
-  routeNextCall(roomName) {
+  routeNextCall() {
     const caller = this.getNextCaller();
     if (!caller) return null;
 
@@ -99,8 +99,7 @@ class CallManager {
     if (availableStaff.length === 0) return null;
 
     const staffId = availableStaff[0];
-    // callId = Daily room name so accept/decline/end reference the same ID
-    const callId = roomName || uuidv4();
+    const callId = uuidv4();
     const startTime = Date.now();
 
     const staffState = this.staffStates.get(staffId);

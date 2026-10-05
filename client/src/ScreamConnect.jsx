@@ -1,116 +1,203 @@
 /**
- * ScreamConnect – Caller View (Daily.co)
+ * ScreamConnect – Caller View
  * Minimalist, urgent, high-contrast messenger-style interface.
  * No personal details, no history, no prompts for info.
- *
- * Audio: Daily.co handles all WebRTC, NAT traversal, and TURN relay.
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './ScreamConnect.css';
 
-// Daily SDK exposes itself as window.Daily in the browser
-const Daily = window.Daily;
-
 const API_URL = process.env.REACT_APP_API_URL || '';
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+
+// Generate anonymous session ID
+function generateSessionId() {
+  let id = localStorage.getItem('scream_session');
+  if (!id) {
+    id = 'scream_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    localStorage.setItem('scream_session', id);
+  }
+  return id;
+}
+
+// Audio visualizer using Web Audio API
+function AudioVisualizer({ analyser, isActive }) {
+  const canvasRef = useRef(null);
+  const animRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const bufferLength = analyser ? analyser.frequencyBinCount : 64;
+    const dataArray = new Uint8Array(bufferLength);
+
+    function draw() {
+      animRef.current = requestAnimationFrame(draw);
+      if (!analyser) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Draw idle pulse
+        const time = Date.now() / 1000;
+        const radius = 40 + Math.sin(time * 2) * 8;
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.2)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const barWidth = (canvas.width / bufferLength) * 2.5;
+      let x = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        const barHeight = (dataArray[i] / 255) * canvas.height * 0.8;
+        const hue = 0 + (i / bufferLength) * 30; // red to orange
+        ctx.fillStyle = `hsl(${hue}, 100%, ${40 + (dataArray[i] / 255) * 30}%)`;
+        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+        x += barWidth + 1;
+      }
+    }
+    draw();
+
+    return () => cancelAnimationFrame(animRef.current);
+  }, [analyser]);
+
+  return <canvas ref={canvasRef} width={300} height={100} className="visualizer-canvas" />;
+}
 
 export default function ScreamConnect() {
+  const sessionId = useRef(generateSessionId());
   const [status, setStatus] = useState('idle'); // idle | connecting | queued | calling | ended
   const [statusMessage, setStatusMessage] = useState('');
   const [position, setPosition] = useState(0);
   const [callDuration, setCallDuration] = useState(0);
+  const [callId, setCallId] = useState(null);
 
-  // Daily.co refs
-  const dailyRef = useRef(null);
+  // WebRTC refs
+  const peerRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const audioRef = useRef(null);
+  const analyserRef = useRef(null);
   const wsRef = useRef(null);
   const timerRef = useRef(null);
   const durationRef = useRef(0);
-  const roomNameRef = useRef(null);
+  const statusRef = useRef('idle');
+
+  // Keep statusRef in sync with status state
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => cleanup();
+    return () => {
+      cleanup();
+    };
   }, []);
 
   function cleanup() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (dailyRef.current) {
-      dailyRef.current.destroy();
-      dailyRef.current = null;
+    if (peerRef.current) {
+      try {
+        peerRef.current.getTracks().forEach(t => t.stop());
+        peerRef.current.close();
+      } catch (e) { /* already closed */ }
+      peerRef.current = null;
     }
-    if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+    }
+    if (audioRef.current) {
+      audioRef.current.srcObject = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (analyserRef.current) {
+      try { analyserRef.current.context.close(); } catch (e) { /* already closed */ }
+      analyserRef.current = null;
+    }
     // Clear ephemeral data
     localStorage.removeItem('scream_session');
+    // Reset
     setStatus('idle');
     setStatusMessage('');
     setCallDuration(0);
+    setCallId(null);
+    callIdRef.current = null;
     durationRef.current = 0;
-    roomNameRef.current = null;
+    statusRef.current = 'idle';
   }
 
   const startCall = async () => {
     cleanup();
     setStatus('connecting');
-    setStatusMessage('Requesting microphone access...');
+    setStatusMessage('Establishing anonymous connection...');
 
     try {
-      // 1. Request mic permission explicitly (gives clear browser prompt)
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Stop the tracks immediately — Daily will re-request when joining
-        stream.getTracks().forEach(t => t.stop());
-      } catch (micErr) {
-        console.error('Mic permission error:', micErr);
-        setStatus('ended');
-        if (micErr.name === 'NotAllowedError' || micErr.name === 'PermissionDeniedError') {
-          setStatusMessage('Microphone access denied. Please allow mic access in your browser settings and try again.');
-        } else if (micErr.name === 'NotFoundError') {
-          setStatusMessage('No microphone found. Please connect a microphone and try again.');
-        } else {
-          setStatusMessage(`Microphone error: ${micErr.message}. Please check your mic and try again.`);
-        }
-        return;
+      // Get local audio
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      localStreamRef.current = stream;
+
+      // Audio element starts muted with NO source (only plays remote audio)
+      if (audioRef.current) {
+        audioRef.current.srcObject = null;
+        audioRef.current.muted = true;
       }
 
-      setStatus('connecting');
-      setStatusMessage('Establishing anonymous connection...');
+      // Set up Web Audio analyser for visualizer
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
 
-      // 2. Request a room from the server (creates Daily room + join token)
-      const res = await fetch(`${API_URL}/api/daily/join-room`, { method: 'POST' });
-      const roomData = await res.json();
-      if (!res.ok) throw new Error(roomData.error || 'Failed to create room');
-      const { roomName, roomUrl, token } = roomData;
-      roomNameRef.current = roomName;
-
-      // 3. Join the Daily room using createIframe (standard embed)
-      const iframe = Daily.createIframe({
-        url: roomUrl,
-        video: false,
-        audio: true,
-        token,
-        showLobby: false,
-        styles: {
-          content: { display: 'none' },
-        },
+      // Create peer connection
+      const peer = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+        ],
       });
-      dailyRef.current = iframe;
-      // Wait for the iframe to be ready
-      await new Promise((resolve) => {
-        iframe.addEventListener('participant-joined', (e) => {
-          if (e.participant?.isLocal) resolve();
-        });
-        // Fallback: resolve after 3s
-        setTimeout(resolve, 3000);
-      });
+      peerRef.current = peer;
 
-      // 3. Connect WebSocket for signaling (queue + routing)
-      const ws = new WebSocket(
-        `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
-      );
+      stream.getTracks().forEach(track => peer.addTrack(track, stream));
+
+      peer.onicecandidate = (event) => {
+        // Send ALL candidates including the null (final) candidate
+        if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
+          wsRef.current.send(JSON.stringify({
+            type: 'ice_candidate',
+            callId: callIdRef.current,
+            candidate: event.candidate, // can be null (signals ICE gathering complete)
+          }));
+        }
+      };
+
+      peer.ontrack = (event) => {
+        if (audioRef.current) {
+          audioRef.current.srcObject = event.streams[0];
+          audioRef.current.muted = false;
+          audioRef.current.play().catch(() => { /* autoplay blocked */ });
+        }
+      };
+
+      // Connect WebSocket
+      const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'join_queue', sessionId: roomName }));
+        ws.send(JSON.stringify({ type: 'join_queue', sessionId: sessionId.current }));
       };
 
       ws.onmessage = (event) => {
@@ -131,20 +218,13 @@ export default function ScreamConnect() {
       };
 
     } catch (err) {
-      console.error('ScreamConnect startCall error:', err);
       setStatus('ended');
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setStatusMessage('Microphone access denied. Please allow mic access in your browser settings and try again.');
-      } else if (err.message && err.message.includes('join')) {
-        setStatusMessage('Failed to join call room. Please try again.');
-      } else {
-        setStatusMessage(`Connection error: ${err.message || err.name || 'Unknown'}. Please try again.`);
-      }
+      setStatusMessage('Microphone access denied. Please allow mic access and try again.');
+      console.error('ScreamConnect startCall error:', err);
     }
   };
 
-  const statusRef = useRef('idle');
-  useEffect(() => { statusRef.current = status; }, [status]);
+  const callIdRef = useRef(null);
 
   function handleWsMessage(data) {
     switch (data.type) {
@@ -156,24 +236,45 @@ export default function ScreamConnect() {
 
       case 'call_incoming':
         setStatus('connecting');
-        setStatusMessage('Agent is joining...');
+        setStatusMessage(data.message || 'Connecting to agent...');
+        setCallId(data.callId);
+        callIdRef.current = data.callId;
+        // Create and send offer
+        createAndSendOffer();
         break;
 
       case 'call_accepted':
-        // Staff has joined the Daily room — audio is now flowing
-        setStatus('calling');
-        setStatusMessage('Connected! You are now speaking with an agent.');
-        durationRef.current = 0;
-        setCallDuration(0);
-        if (timerRef.current) clearInterval(timerRef.current);
-        timerRef.current = setInterval(() => {
-          durationRef.current++;
-          setCallDuration(durationRef.current);
-        }, 1000);
+        if (data.answer) {
+          handleAnswer(data.answer);
+        } else {
+          // Staff accepted, but WebRTC answer still pending
+          setStatusMessage('Agent is connecting...');
+        }
+        break;
+
+      case 'ice_candidate':
+        handleRemoteIce(data.candidate);
         break;
 
       case 'call_ended':
-        endCall();
+        setStatus('ended');
+        setStatusMessage('Call has ended. Stay strong.');
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        // Stop WebRTC
+        if (peerRef.current) {
+          try {
+            peerRef.current.getTracks().forEach(t => t.stop());
+            peerRef.current.close();
+          } catch (e) { /* already closed */ }
+          peerRef.current = null;
+        }
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(t => t.stop());
+          localStreamRef.current = null;
+        }
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+        }
         break;
 
       case 'error':
@@ -182,21 +283,64 @@ export default function ScreamConnect() {
         break;
 
       default:
-        break;
+        console.log('ScreamConnect unknown message:', data.type);
+    }
+  }
+
+  async function createAndSendOffer() {
+    const peer = peerRef.current;
+    if (!peer) return;
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+
+    // Send offer immediately (trickle ICE handles candidates separately)
+    if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
+      wsRef.current.send(JSON.stringify({
+        type: 'create_offer',
+        callId: callIdRef.current,
+        offer: peer.localDescription,
+      }));
+    }
+  }
+
+  async function handleAnswer(answer) {
+    const peer = peerRef.current;
+    if (!peer) return;
+    try {
+      await peer.setRemoteDescription(new RTCSessionDescription(answer));
+      setStatus('calling');
+      setStatusMessage('Connected! You are now speaking with an agent.');
+      durationRef.current = 0;
+      timerRef.current = setInterval(() => {
+        durationRef.current++;
+        setCallDuration(durationRef.current);
+      }, 1000);
+    } catch (err) {
+      console.error('ScreamConnect handleAnswer error:', err);
+      setStatus('ended');
+      setStatusMessage('Connection error. Please try again.');
+    }
+  }
+
+  async function handleRemoteIce(candidate) {
+    const peer = peerRef.current;
+    if (!peer) return;
+    try {
+      // candidate can be null (signals ICE gathering complete) — that's fine
+      await peer.addIceCandidate(candidate ? new RTCIceCandidate(candidate) : null);
+    } catch (err) {
+      console.error('ScreamConnect handleRemoteIce error:', err);
     }
   }
 
   const endCall = () => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      if (roomNameRef.current) {
-        wsRef.current.send(JSON.stringify({ type: 'end_call', callId: roomNameRef.current }));
+      if (callIdRef.current) {
+        wsRef.current.send(JSON.stringify({ type: 'end_call', callId: callIdRef.current }));
+      } else {
+        wsRef.current.send(JSON.stringify({ type: 'leave_queue' }));
       }
-      // Also clean up the Daily room
-      fetch(`${API_URL}/api/daily/leave-room`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomName: roomNameRef.current }),
-      }).catch(() => {});
     }
     cleanup();
   };
@@ -209,6 +353,9 @@ export default function ScreamConnect() {
 
   return (
     <div className="scream-connect">
+      <audio ref={audioRef} autoPlay playsInline />
+
+      {/* Header */}
       <header className="scream-header">
         <div className="logo">
           <span className="logo-icon">🔊</span>
@@ -217,6 +364,7 @@ export default function ScreamConnect() {
         <p className="tagline">You are not alone.</p>
       </header>
 
+      {/* Main Content */}
       <main className="scream-main">
         {/* Idle state */}
         {status === 'idle' && (
@@ -247,6 +395,9 @@ export default function ScreamConnect() {
             <h2>{status === 'connecting' ? 'Connecting...' : 'You are in the queue'}</h2>
             <p className="status-message">{statusMessage}</p>
             {position > 0 && <p className="queue-position">Position: #{position}</p>}
+            <div className="visualizer-container">
+              <AudioVisualizer analyser={analyserRef.current} isActive={false} />
+            </div>
             <button className="btn-cancel" onClick={endCall}>Cancel</button>
           </div>
         )}
@@ -263,6 +414,9 @@ export default function ScreamConnect() {
               <p className="call-status-text">Connected</p>
               <p className="call-timer">{formatDuration(callDuration)}</p>
             </div>
+            <div className="visualizer-container">
+              <AudioVisualizer analyser={analyserRef.current} isActive={true} />
+            </div>
             <button className="btn-end" onClick={endCall}>
               <span className="btn-icon">📞</span>
               END CALL
@@ -276,20 +430,25 @@ export default function ScreamConnect() {
             <div className="ended-icon">✓</div>
             <h2>{callDuration > 0 ? 'Call Ended' : statusMessage}</h2>
             {callDuration > 0 && (
-              <p className="call-summary">Duration: {formatDuration(callDuration)}</p>
+              <p className="call-summary">
+                Duration: {formatDuration(callDuration)}
+              </p>
             )}
             <p className="privacy-note">
               All data has been wiped. This conversation never happened.
             </p>
-            <button className="btn-scream" onClick={startCall}>
+            <button className="btn-scream" onClick={() => { cleanup(); startCall(); }}>
               <span className="btn-icon">🔥</span>
               CALL AGAIN
             </button>
-            <button className="btn-secondary" onClick={cleanup}>Close</button>
+            <button className="btn-secondary" onClick={endCall}>
+              Close
+            </button>
           </div>
         )}
       </main>
 
+      {/* Footer */}
       <footer className="scream-footer">
         <p>Anonymous. Ephemeral. Safe.</p>
       </footer>

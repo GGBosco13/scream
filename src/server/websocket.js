@@ -93,17 +93,14 @@ function setupWebSocket(wss, callManager, redisClient) {
 
 async function handleCallerJoin(ws, message, callManager) {
   const callerId = uuidv4();
-  const roomName = message.sessionId || callerId; // Daily room name
   callManager.connections.set(`caller:${callerId}`, ws);
   await callManager.joinQueue(callerId);
   ws.callerId = callerId;
-  ws.roomName = roomName;
 
   // Always confirm queue position to the caller
   ws.send(JSON.stringify({
     type: 'queued',
     sessionId: callerId,
-    roomName,
     position: callManager.getQueueLength(),
     message: 'You are in the queue. Waiting for an available agent...',
   }));
@@ -120,28 +117,25 @@ async function handleCallerJoin(ws, message, callManager) {
 
 function tryRoute(callerId, callManager, ws) {
   if (ws._routed) return;
-  const route = callManager.routeNextCall(ws.roomName);
+  const route = callManager.routeNextCall();
   if (!route) return;
 
   ws._routed = true;
   ws.callInfo = route;
   if (ws._poll) { clearInterval(ws._poll); ws._poll = null; }
 
-  const roomName = ws.roomName || route.callId;
   const staffWs = callManager.connections.get(`staff:${route.staffId}`);
   if (staffWs && staffWs.readyState === 1) {
     staffWs.send(JSON.stringify({
       type: 'incoming_call',
-      callId: roomName,
-      roomName,
+      callId: route.callId,
       callerId,
       message: 'Anonymous caller is waiting...',
     }));
   }
   ws.send(JSON.stringify({
     type: 'call_incoming',
-    callId: roomName,
-    roomName,
+    callId: route.callId,
     message: 'Connecting to agent...',
   }));
 }
@@ -204,7 +198,7 @@ function handleStatusChange(ws, message, callManager) {
 }
 
 function handleAccept(ws, message, callManager) {
-  const { callId } = message; // callId = Daily room name
+  const { callId } = message;
   const call = callManager.activeCalls.get(callId);
   if (!call) {
     ws.send(JSON.stringify({ type: 'error', message: 'Call not found' }));
@@ -225,15 +219,6 @@ function handleAccept(ws, message, callManager) {
 function handleDecline(ws, message, callManager) {
   const { callId } = message;
   callManager.declineCall(callId);
-
-  // Find caller by room name
-  for (const [key, conn] of callManager.connections) {
-    if (key.startsWith('caller:') && conn.roomName === callId) {
-      conn.send(JSON.stringify({ type: 'call_declined', callId }));
-      break;
-    }
-  }
-
   ws.send(JSON.stringify({ type: 'call_declined' }));
 }
 
@@ -249,48 +234,25 @@ function handleStaffAnswer(ws, message, callManager) {
 }
 
 function handleEnd(ws, message, callManager, redisClient) {
-  const { callId } = message; // callId = Daily room name
+  const { callId } = message;
+  const call = callManager.activeCalls.get(callId);
+  if (!call) return;
 
-  // Find the call in callManager (by callId or by room name)
-  let call = callManager.activeCalls.get(callId);
-  let callerWs = null;
-  let staffWs = null;
+  callManager.endCall(callId);
 
-  if (call) {
-    callerWs = callManager.connections.get(`caller:${call.callerId}`);
-    staffWs = callManager.connections.get(`staff:${call.staffId}`);
-    callManager.endCall(callId);
-    if (redisClient && redisClient.cleanupCallerSession) {
-      redisClient.cleanupCallerSession(call.callerId);
-    }
-  } else {
-    // Call not in callManager — find by room name
-    for (const [key, conn] of callManager.connections) {
-      if (key.startsWith('caller:') && conn.roomName === callId) {
-        callerWs = conn;
-        break;
-      }
-    }
-    // Staff is the one who is NOT the caller
-    for (const [key, conn] of callManager.connections) {
-      if (key.startsWith('staff:') && conn.readyState === 1) {
-        staffWs = conn;
-        break;
-      }
-    }
+  if (redisClient && redisClient.cleanupCallerSession) {
+    redisClient.cleanupCallerSession(call.callerId);
   }
 
-  // Notify the OTHER party (whoever didn't initiate the end)
-  if (ws.callerId) {
-    // Caller initiated end → notify staff
-    if (staffWs && staffWs.readyState === 1) {
-      staffWs.send(JSON.stringify({ type: 'call_ended', callId }));
-    }
-  } else {
-    // Staff initiated end → notify caller
-    if (callerWs && callerWs.readyState === 1) {
-      callerWs.send(JSON.stringify({ type: 'call_ended', callId }));
-    }
+  // Notify BOTH the caller and the staff that the call ended
+  const callerWs = callManager.connections.get(`caller:${call.callerId}`);
+  if (callerWs && callerWs.readyState === 1 && ws !== callerWs) {
+    callerWs.send(JSON.stringify({ type: 'call_ended', callId }));
+  }
+
+  const staffWs = callManager.connections.get(`staff:${call.staffId}`);
+  if (staffWs && staffWs.readyState === 1 && ws !== staffWs) {
+    staffWs.send(JSON.stringify({ type: 'call_ended', callId }));
   }
 }
 

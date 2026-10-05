@@ -14,7 +14,6 @@ const { CallManager } = require('./callManager');
 const { createRedisClient } = require('./redis');
 const { setupWebSocket } = require('./websocket');
 const authRoutes = require('./routes/auth');
-const dailyRoutes = require('./routes/daily');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -30,7 +29,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(BUILD_DIR));
 app.use('/api/auth', authRoutes);
-app.use('/api/daily', dailyRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {

@@ -4,12 +4,11 @@
   "private": true,
   "proxy": "http://localhost:3000",
   "dependencies": {
-    "@daily-co/daily-js": "^0.93.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
-    "web-vitals": "^2.1.4",
-    "webrtc-adapter": "^9.0.1"
+    "webrtc-adapter": "^9.0.1",
+    "web-vitals": "^2.1.4"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -17,15 +16,7 @@
     "test": "react-scripts test"
   },
   "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
+    "production": [">0.2%", "not dead", "not op_mini all"],
+    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
   }
 }

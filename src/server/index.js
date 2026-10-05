@@ -19,6 +19,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BUILD_DIR = path.join(process.cwd(), 'client', 'build');
 
+// Verify build exists
+if (!require('fs').existsSync(path.join(BUILD_DIR, 'index.html'))) {
+  console.error('[Fatal] client/build/index.html not found. Run: cd client && npm run build');
+  process.exit(1);
+}
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(BUILD_DIR));

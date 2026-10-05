@@ -89,6 +89,18 @@ function generateJoinToken(roomName, participantName, ttlSeconds = 300) {
 }
 
 /**
+ * GET /api/daily/status
+ * Debug: check if API key is configured
+ */
+router.get('/status', (req, res) => {
+  res.json({
+    hasApiKey: !!DAILY_API_KEY,
+    apiKeyPrefix: DAILY_API_KEY ? DAILY_API_KEY.slice(0, 8) + '...' : 'NOT SET',
+    rooms: rooms.size,
+  });
+});
+
+/**
  * POST /api/daily/join-room
  * Caller requests a new room.
  * Creates the Daily room, generates a join token.

@@ -17,7 +17,7 @@ const authRoutes = require('./routes/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const BUILD_DIR = path.join(__dirname, '../../client/build');
+const BUILD_DIR = path.join(process.cwd(), 'client', 'build');
 
 app.use(cors());
 app.use(express.json());

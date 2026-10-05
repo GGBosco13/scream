@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Staff accounts - only readable by authenticated staff
+    match /staff/{staffId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only written by Cloud Functions
+    }
+
+    // Call queue - public read (for queue position), no direct write
+    match /queue/{callerId} {
+      allow read: if true;
+      allow write: if false; // Only written by Cloud Functions
+    }
+
+    // Active calls - staff can read their calls
+    match /calls/{callId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only written by Cloud Functions
+    }
+  }
+}

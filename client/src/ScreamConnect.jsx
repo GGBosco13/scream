@@ -1,369 +1,182 @@
 /**
- * ScreamConnect – Caller View
- * Minimalist, urgent, high-contrast messenger-style interface.
+ * ScreamConnect – Caller View (Firebase + Daily.co)
+ * Minimalist, urgent, high-contrast interface.
  * No personal details, no history, no prompts for info.
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { ref, onValue, set, remove } from 'firebase/database';
+import { rtdb } from './firebase';
+import Daily from '@daily-co/daily-js';
 import './ScreamConnect.css';
 
-const API_URL = process.env.REACT_APP_API_URL || '';
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
-
-// Generate anonymous session ID
-function generateSessionId() {
-  let id = localStorage.getItem('scream_session');
-  if (!id) {
-    id = 'scream_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-    localStorage.setItem('scream_session', id);
-  }
-  return id;
-}
-
-// Audio visualizer using Web Audio API
-function AudioVisualizer({ analyser, isActive }) {
-  const canvasRef = useRef(null);
-  const animRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const bufferLength = analyser ? analyser.frequencyBinCount : 64;
-    const dataArray = new Uint8Array(bufferLength);
-
-    function draw() {
-      animRef.current = requestAnimationFrame(draw);
-      if (!analyser) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // Draw idle pulse
-        const time = Date.now() / 1000;
-        const radius = 40 + Math.sin(time * 2) * 8;
-        ctx.beginPath();
-        ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.2)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        return;
-      }
-
-      analyser.getByteFrequencyData(dataArray);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const barWidth = (canvas.width / bufferLength) * 2.5;
-      let x = 0;
-
-      for (let i = 0; i < bufferLength; i++) {
-        const barHeight = (dataArray[i] / 255) * canvas.height * 0.8;
-        const hue = 0 + (i / bufferLength) * 30; // red to orange
-        ctx.fillStyle = `hsl(${hue}, 100%, ${40 + (dataArray[i] / 255) * 30}%)`;
-        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-        x += barWidth + 1;
-      }
-    }
-    draw();
-
-    return () => cancelAnimationFrame(animRef.current);
-  }, [analyser]);
-
-  return <canvas ref={canvasRef} width={300} height={100} className="visualizer-canvas" />;
-}
+const API_BASE = '';
 
 export default function ScreamConnect() {
-  const sessionId = useRef(generateSessionId());
-  const [status, setStatus] = useState('idle'); // idle | connecting | queued | calling | ended
+  const [status, setStatus] = useState('idle');
   const [statusMessage, setStatusMessage] = useState('');
   const [position, setPosition] = useState(0);
   const [callDuration, setCallDuration] = useState(0);
-  const [callId, setCallId] = useState(null);
 
-  // WebRTC refs
-  const peerRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const audioRef = useRef(null);
-  const analyserRef = useRef(null);
-  const wsRef = useRef(null);
+  const dailyRef = useRef(null);
   const timerRef = useRef(null);
   const durationRef = useRef(0);
-  const statusRef = useRef('idle');
-
-  // Keep statusRef in sync with status state
-  useEffect(() => { statusRef.current = status; }, [status]);
+  const callerIdRef = useRef(null);
+  const roomNameRef = useRef(null);
+  const callIdRef = useRef(null);
+  const unsubRefs = useRef([]);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      cleanup();
-    };
+    return () => cleanup();
   }, []);
 
   function cleanup() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (peerRef.current) {
-      try {
-        peerRef.current.getTracks().forEach(t => t.stop());
-        peerRef.current.close();
-      } catch (e) { /* already closed */ }
-      peerRef.current = null;
+    if (dailyRef.current) {
+      try { dailyRef.current.destroy(); } catch (e) {}
+      dailyRef.current = null;
     }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(t => t.stop());
-      localStreamRef.current = null;
-    }
-    if (audioRef.current) {
-      audioRef.current.srcObject = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    if (analyserRef.current) {
-      try { analyserRef.current.context.close(); } catch (e) { /* already closed */ }
-      analyserRef.current = null;
-    }
-    // Clear ephemeral data
+    unsubRefs.current.forEach(unsub => unsub());
+    unsubRefs.current = [];
     localStorage.removeItem('scream_session');
-    // Reset
-    setStatus('idle');
-    setStatusMessage('');
-    setCallDuration(0);
-    setCallId(null);
-    callIdRef.current = null;
-    durationRef.current = 0;
-    statusRef.current = 'idle';
   }
 
   const startCall = async () => {
     cleanup();
     setStatus('connecting');
-    setStatusMessage('Establishing anonymous connection...');
+    setStatusMessage('Requesting microphone access...');
 
     try {
-      // Get local audio
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      localStreamRef.current = stream;
-
-      // Audio element starts muted with NO source (only plays remote audio)
-      if (audioRef.current) {
-        audioRef.current.srcObject = null;
-        audioRef.current.muted = true;
+      // 1. Request mic permission
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+      } catch (micErr) {
+        console.error('Mic error:', micErr);
+        setStatus('ended');
+        setStatusMessage('Microphone access denied. Please allow mic and try again.');
+        return;
       }
 
-      // Set up Web Audio analyser for visualizer
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioCtx.createMediaStreamSource(stream);
-      const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyserRef.current = analyser;
+      setStatus('connecting');
+      setStatusMessage('Establishing anonymous connection...');
 
-      // Create peer connection
-      const peer = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-        ],
+      // 2. Request a room from the server
+      const res = await fetch(`${API_BASE}/api/daily/join-room`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create room');
+
+      const { callerId, roomName, roomUrl, token } = data;
+      callerIdRef.current = callerId;
+      roomNameRef.current = roomName;
+
+      // 3. Join the Daily room
+      const daily = Daily.createIframe({
+        url: roomUrl,
+        video: false,
+        audio: true,
+        token,
+        showLobby: false,
+        styles: { content: { display: 'none' } },
       });
-      peerRef.current = peer;
+      dailyRef.current = daily;
 
-      stream.getTracks().forEach(track => peer.addTrack(track, stream));
-
-      peer.onicecandidate = (event) => {
-        // Send ALL candidates including the null (final) candidate
-        if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
-          wsRef.current.send(JSON.stringify({
-            type: 'ice_candidate',
-            callId: callIdRef.current,
-            candidate: event.candidate, // can be null (signals ICE gathering complete)
-          }));
+      // 4. Listen for call events via Realtime Database
+      const callRef = ref(rtdb, `queue/${callerId}`);
+      const unsub1 = onValue(callRef, (snapshot) => {
+        const queueData = snapshot.val();
+        if (queueData?.callId) {
+          callIdRef.current = queueData.callId;
+          listenForCallStatus(queueData.callId);
         }
-      };
+      });
+      unsubRefs.current.push(unsub1);
 
-      peer.ontrack = (event) => {
-        if (audioRef.current) {
-          audioRef.current.srcObject = event.streams[0];
-          audioRef.current.muted = false;
-          audioRef.current.play().catch(() => { /* autoplay blocked */ });
-        }
-      };
-
-      // Connect WebSocket
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'join_queue', sessionId: sessionId.current }));
-      };
-
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        handleWsMessage(data);
-      };
-
-      ws.onerror = () => {
-        setStatus('ended');
-        setStatusMessage('Connection failed. Please try again.');
-      };
-
-      ws.onclose = () => {
-        if (statusRef.current !== 'ended') {
-          setStatus('ended');
-          setStatusMessage('Connection lost. Please try again.');
-        }
-      };
+      setStatus('queued');
+      setStatusMessage('You are in the queue. Waiting for an agent...');
+      setPosition(1);
 
     } catch (err) {
+      console.error('startCall error:', err);
       setStatus('ended');
-      setStatusMessage('Microphone access denied. Please allow mic access and try again.');
-      console.error('ScreamConnect startCall error:', err);
+      setStatusMessage(`Connection error: ${err.message}. Please try again.`);
     }
   };
 
-  const callIdRef = useRef(null);
+  function listenForCallStatus(callId) {
+    const callRef = ref(rtdb, `calls/${callId}`);
+    const unsub = onValue(callRef, (snapshot) => {
+      const callData = snapshot.val();
+      if (!callData) return;
 
-  function handleWsMessage(data) {
-    switch (data.type) {
-      case 'queued':
-        setStatus('queued');
-        setStatusMessage(data.message);
-        setPosition(data.position);
-        break;
-
-      case 'call_incoming':
-        setStatus('connecting');
-        setStatusMessage(data.message || 'Connecting to agent...');
-        setCallId(data.callId);
-        callIdRef.current = data.callId;
-        // Create and send offer
-        createAndSendOffer();
-        break;
-
-      case 'call_accepted':
-        if (data.answer) {
-          handleAnswer(data.answer);
-        } else {
-          // Staff accepted, but WebRTC answer still pending
-          setStatusMessage('Agent is connecting...');
-        }
-        break;
-
-      case 'ice_candidate':
-        handleRemoteIce(data.candidate);
-        break;
-
-      case 'call_ended':
-        setStatus('ended');
-        setStatusMessage('Call has ended. Stay strong.');
-        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-        // Stop WebRTC
-        if (peerRef.current) {
-          try {
-            peerRef.current.getTracks().forEach(t => t.stop());
-            peerRef.current.close();
-          } catch (e) { /* already closed */ }
-          peerRef.current = null;
-        }
-        if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach(t => t.stop());
-          localStreamRef.current = null;
-        }
-        if (audioRef.current) {
-          audioRef.current.srcObject = null;
-        }
-        break;
-
-      case 'call_declined':
-        setStatus('ended');
-        setStatusMessage('Agent is unavailable. Please try again.');
-        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-        // Clean up WebRTC if it was started
-        if (peerRef.current) {
-          try {
-            peerRef.current.getTracks().forEach(t => t.stop());
-            peerRef.current.close();
-          } catch (e) { /* already closed */ }
-          peerRef.current = null;
-        }
-        if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach(t => t.stop());
-          localStreamRef.current = null;
-        }
-        if (audioRef.current) {
-          audioRef.current.srcObject = null;
-        }
-        break;
-
-      case 'error':
-        setStatus('ended');
-        setStatusMessage(data.message || 'An error occurred.');
-        break;
-
-      default:
-        console.log('ScreamConnect unknown message:', data.type);
-    }
-  }
-
-  async function createAndSendOffer() {
-    const peer = peerRef.current;
-    if (!peer) return;
-
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-
-    // Send offer immediately (trickle ICE handles candidates separately)
-    if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
-      wsRef.current.send(JSON.stringify({
-        type: 'create_offer',
-        callId: callIdRef.current,
-        offer: peer.localDescription,
-      }));
-    }
-  }
-
-  async function handleAnswer(answer) {
-    const peer = peerRef.current;
-    if (!peer) return;
-    try {
-      await peer.setRemoteDescription(new RTCSessionDescription(answer));
-      setStatus('calling');
-      setStatusMessage('Connected! You are now speaking with an agent.');
-      durationRef.current = 0;
-      timerRef.current = setInterval(() => {
-        durationRef.current++;
-        setCallDuration(durationRef.current);
-      }, 1000);
-    } catch (err) {
-      console.error('ScreamConnect handleAnswer error:', err);
-      setStatus('ended');
-      setStatusMessage('Connection error. Please try again.');
-    }
-  }
-
-  async function handleRemoteIce(candidate) {
-    const peer = peerRef.current;
-    if (!peer) return;
-    try {
-      // candidate can be null (signals ICE gathering complete) — that's fine
-      await peer.addIceCandidate(candidate ? new RTCIceCandidate(candidate) : null);
-    } catch (err) {
-      console.error('ScreamConnect handleRemoteIce error:', err);
-    }
-  }
-
-  const endCall = () => {
-    if (wsRef.current && wsRef.current.readyState === 1) {
-      if (callIdRef.current) {
-        wsRef.current.send(JSON.stringify({ type: 'end_call', callId: callIdRef.current }));
-      } else {
-        wsRef.current.send(JSON.stringify({ type: 'leave_queue' }));
+      switch (callData.status) {
+        case 'connected':
+          setStatus('calling');
+          setStatusMessage('Connected! You are now speaking with an agent.');
+          startTimer();
+          break;
+        case 'declined':
+          handleDeclined();
+          break;
+        case 'ended':
+          handleEnded('Call has ended. Stay strong.');
+          break;
+        default:
+          break;
       }
+    });
+    unsubRefs.current.push(unsub);
+  }
+
+  function startTimer() {
+    durationRef.current = 0;
+    setCallDuration(0);
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      durationRef.current++;
+      setCallDuration(durationRef.current);
+    }, 1000);
+  }
+
+  function handleDeclined() {
+    setStatus('ended');
+    setStatusMessage('Agent is unavailable. Please try again.');
+    cleanupDaily();
+  }
+
+  function handleEnded(message) {
+    setStatus('ended');
+    setStatusMessage(message);
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    cleanupDaily();
+  }
+
+  function cleanupDaily() {
+    if (dailyRef.current) {
+      try { dailyRef.current.destroy(); } catch (e) {}
+      dailyRef.current = null;
+    }
+  }
+
+  const endCall = async () => {
+    if (callIdRef.current) {
+      await fetch(`${API_BASE}/api/calls/end`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callId: callIdRef.current }),
+      }).catch(() => {});
+    }
+    if (callerIdRef.current) {
+      await fetch(`${API_BASE}/api/daily/leave-room`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callerId: callerIdRef.current, roomName: roomNameRef.current }),
+      }).catch(() => {});
     }
     cleanup();
+    setStatus('ended');
+    setStatusMessage('Call ended. All data wiped.');
   };
 
   const formatDuration = (seconds) => {
@@ -374,9 +187,6 @@ export default function ScreamConnect() {
 
   return (
     <div className="scream-connect">
-      <audio ref={audioRef} autoPlay playsInline />
-
-      {/* Header */}
       <header className="scream-header">
         <div className="logo">
           <span className="logo-icon">🔊</span>
@@ -385,9 +195,7 @@ export default function ScreamConnect() {
         <p className="tagline">You are not alone.</p>
       </header>
 
-      {/* Main Content */}
       <main className="scream-main">
-        {/* Idle state */}
         {status === 'idle' && (
           <div className="state-idle">
             <div className="pulse-ring">
@@ -399,31 +207,23 @@ export default function ScreamConnect() {
               </div>
             </div>
             <h2>Need to let it all out?</h2>
-            <p className="privacy-note">
-              100% anonymous. No registration. No recording. No traces.
-            </p>
+            <p className="privacy-note">100% anonymous. No registration. No recording. No traces.</p>
             <button className="btn-scream" onClick={startCall}>
-              <span className="btn-icon">🔥</span>
-              START SCREAM
+              <span className="btn-icon">🔥</span> START SCREAM
             </button>
           </div>
         )}
 
-        {/* Queued state */}
         {(status === 'connecting' || status === 'queued') && (
           <div className="state-queued">
             <div className="spinner-ring" />
             <h2>{status === 'connecting' ? 'Connecting...' : 'You are in the queue'}</h2>
             <p className="status-message">{statusMessage}</p>
             {position > 0 && <p className="queue-position">Position: #{position}</p>}
-            <div className="visualizer-container">
-              <AudioVisualizer analyser={analyserRef.current} isActive={false} />
-            </div>
             <button className="btn-cancel" onClick={endCall}>Cancel</button>
           </div>
         )}
 
-        {/* Calling state */}
         {status === 'calling' && (
           <div className="state-calling">
             <div className="active-pulse">
@@ -435,41 +235,26 @@ export default function ScreamConnect() {
               <p className="call-status-text">Connected</p>
               <p className="call-timer">{formatDuration(callDuration)}</p>
             </div>
-            <div className="visualizer-container">
-              <AudioVisualizer analyser={analyserRef.current} isActive={true} />
-            </div>
             <button className="btn-end" onClick={endCall}>
-              <span className="btn-icon">📞</span>
-              END CALL
+              <span className="btn-icon">📞</span> END CALL
             </button>
           </div>
         )}
 
-        {/* Ended state */}
         {status === 'ended' && (
           <div className="state-ended">
-            <div className="ended-icon">✓</div>
+            <div className="ended-icon">{callDuration > 0 ? '✓' : '✕'}</div>
             <h2>{callDuration > 0 ? 'Call Ended' : statusMessage}</h2>
-            {callDuration > 0 && (
-              <p className="call-summary">
-                Duration: {formatDuration(callDuration)}
-              </p>
-            )}
-            <p className="privacy-note">
-              All data has been wiped. This conversation never happened.
-            </p>
-            <button className="btn-scream" onClick={() => { cleanup(); startCall(); }}>
-              <span className="btn-icon">🔥</span>
-              CALL AGAIN
+            {callDuration > 0 && <p className="call-summary">Duration: {formatDuration(callDuration)}</p>}
+            <p className="privacy-note">All data has been wiped. This conversation never happened.</p>
+            <button className="btn-scream" onClick={startCall}>
+              <span className="btn-icon">🔥</span> CALL AGAIN
             </button>
-            <button className="btn-secondary" onClick={endCall}>
-              Close
-            </button>
+            <button className="btn-secondary" onClick={() => { setStatus('idle'); setStatusMessage(''); setCallDuration(0); }}>Close</button>
           </div>
         )}
       </main>
 
-      {/* Footer */}
       <footer className="scream-footer">
         <p>Anonymous. Ephemeral. Safe.</p>
       </footer>

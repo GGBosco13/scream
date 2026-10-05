@@ -1,27 +1,17 @@
 {
   "name": "scream",
-  "version": "1.0.0",
-  "description": "Anonymous Voice Venting Platform",
-  "main": "src/server/index.js",
+  "version": "2.0.0",
+  "description": "Anonymous Voice Venting Platform (Firebase + Daily.co)",
   "scripts": {
-    "postinstall": "cd client && npm install",
-    "start": "node src/server/index.js",
-    "dev:server": "nodemon src/server/index.js",
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "build": "cd client && CI=false react-scripts build",
+    "deploy": "npm run build && firebase deploy",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:firestore": "firebase deploy --only firestore",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "license": "ISC",
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "ioredis": "^5.3.2",
-    "uuid": "^9.0.0",
-    "ws": "^8.16.0"
-  },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "firebase-tools": "^15.0.0"
   }
 }

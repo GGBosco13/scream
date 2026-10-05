@@ -185,14 +185,22 @@ export default function StaffDashboard() {
   };
 
   const endLocalCall = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (peerRef.current) {
-      peerRef.current.getTracks().forEach(t => t.stop());
-      peerRef.current.close();
+      try {
+        // Stop both local and remote tracks
+        peerRef.current.getSenders().forEach(s => s.track && s.track.stop());
+        peerRef.current.getReceivers().forEach(r => r.track && r.track.stop());
+        peerRef.current.close();
+      } catch (e) { /* already closed */ }
       peerRef.current = null;
     }
     if (callerStreamRef.current) {
       callerStreamRef.current.getTracks().forEach(t => t.stop());
+      callerStreamRef.current = null;
+    }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
     }
     setCurrentCallId(null);
     setCurrentCallDuration(0);

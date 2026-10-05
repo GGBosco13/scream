@@ -85,6 +85,10 @@ export default function ScreamConnect() {
   const wsRef = useRef(null);
   const timerRef = useRef(null);
   const durationRef = useRef(0);
+  const statusRef = useRef('idle');
+
+  // Keep statusRef in sync with status state
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -94,22 +98,39 @@ export default function ScreamConnect() {
   }, []);
 
   function cleanup() {
-    if (timerRef.current) clearInterval(timerRef.current);
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (peerRef.current) {
-      peerRef.current.getTracks().forEach(t => t.stop());
-      peerRef.current.close();
+      try {
+        peerRef.current.getTracks().forEach(t => t.stop());
+        peerRef.current.close();
+      } catch (e) { /* already closed */ }
+      peerRef.current = null;
     }
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
     }
-    if (wsRef.current) wsRef.current.close();
+    if (audioRef.current) {
+      audioRef.current.srcObject = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (analyserRef.current) {
+      try { analyserRef.current.context.close(); } catch (e) { /* already closed */ }
+      analyserRef.current = null;
+    }
     // Clear ephemeral data
     localStorage.removeItem('scream_session');
     // Reset
     setStatus('idle');
     setStatusMessage('');
     setCallDuration(0);
+    setCallId(null);
+    callIdRef.current = null;
     durationRef.current = 0;
+    statusRef.current = 'idle';
   }
 
   const startCall = async () => {
@@ -184,7 +205,7 @@ export default function ScreamConnect() {
       };
 
       ws.onclose = () => {
-        if (status !== 'ended') {
+        if (statusRef.current !== 'ended') {
           setStatus('ended');
           setStatusMessage('Connection lost. Please try again.');
         }
@@ -219,6 +240,17 @@ export default function ScreamConnect() {
       case 'call_accepted':
         if (data.answer) {
           handleAnswer(data.answer);
+        } else {
+          // Staff accepted, connection is live
+          setStatus('calling');
+          setStatusMessage('Connected with a support agent.');
+          durationRef.current = 0;
+          setCallDuration(0);
+          if (timerRef.current) clearInterval(timerRef.current);
+          timerRef.current = setInterval(() => {
+            durationRef.current++;
+            setCallDuration(durationRef.current);
+          }, 1000);
         }
         break;
 
@@ -229,7 +261,22 @@ export default function ScreamConnect() {
       case 'call_ended':
         setStatus('ended');
         setStatusMessage('Call has ended. Stay strong.');
-        if (timerRef.current) clearInterval(timerRef.current);
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        // Stop WebRTC
+        if (peerRef.current) {
+          try {
+            peerRef.current.getTracks().forEach(t => t.stop());
+            peerRef.current.close();
+          } catch (e) { /* already closed */ }
+          peerRef.current = null;
+        }
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(t => t.stop());
+          localStreamRef.current = null;
+        }
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+        }
         break;
 
       case 'error':
@@ -302,7 +349,11 @@ export default function ScreamConnect() {
 
   const endCall = () => {
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: 'leave_queue' }));
+      if (callIdRef.current) {
+        wsRef.current.send(JSON.stringify({ type: 'end_call', callId: callIdRef.current }));
+      } else {
+        wsRef.current.send(JSON.stringify({ type: 'leave_queue' }));
+      }
     }
     cleanup();
   };

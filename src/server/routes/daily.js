@@ -21,7 +21,7 @@ const rooms = new Map();
  */
 async function createDailyRoom(name) {
   if (!DAILY_API_KEY) {
-    // No API key — fall back to a synthetic URL (Daily may reject it)
+    // No API key — fall back to a synthetic URL
     return `https://api.daily.co/apps/meetings/rooms/${name}`;
   }
 
@@ -32,21 +32,24 @@ async function createDailyRoom(name) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      name,
-      url: `https://scream-bb7m.onrender.com/room/${name}`,
-      props: {
-        leaveRoomUrl: null,
-      },
+      name: `scream-${name.slice(0, 8)}`,
     }),
   });
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(`Daily API error: ${response.status} ${err.message || ''}`);
+    const errText = await response.text().catch(() => '');
+    let errMsg = errText;
+    try {
+      const err = JSON.parse(errText);
+      errMsg = err.message || err.error || errText;
+    } catch { /* use raw text */ }
+    console.error('[Daily] Room creation failed:', response.status, errMsg);
+    throw new Error(`Daily API ${response.status}: ${errMsg}`);
   }
 
   const room = await response.json();
-  return room.url || `https://api.daily.co/apps/meetings/rooms/${name}`;
+  console.log('[Daily] Room created:', room.url);
+  return room.url;
 }
 
 /**

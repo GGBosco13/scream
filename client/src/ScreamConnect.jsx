@@ -277,6 +277,27 @@ export default function ScreamConnect() {
         }
         break;
 
+      case 'call_declined':
+        setStatus('ended');
+        setStatusMessage('Agent is unavailable. Please try again.');
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        // Clean up WebRTC if it was started
+        if (peerRef.current) {
+          try {
+            peerRef.current.getTracks().forEach(t => t.stop());
+            peerRef.current.close();
+          } catch (e) { /* already closed */ }
+          peerRef.current = null;
+        }
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(t => t.stop());
+          localStreamRef.current = null;
+        }
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+        }
+        break;
+
       case 'error':
         setStatus('ended');
         setStatusMessage(data.message || 'An error occurred.');

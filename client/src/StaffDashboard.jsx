@@ -6,7 +6,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import './StaffDashboard.css';
 
-const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:3000/ws';
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 const API_URL = process.env.REACT_APP_API_URL || '';
 
 export default function StaffDashboard() {

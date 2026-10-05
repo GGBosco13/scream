@@ -83,7 +83,8 @@ export default function StaffDashboard() {
   function handleWsMessage(data) {
     switch (data.type) {
       case 'login_success':
-        setStatus('away');
+        // Use status from server response, or default to available
+        setStatus(data.status || 'available');
         break;
 
       case 'login_error':

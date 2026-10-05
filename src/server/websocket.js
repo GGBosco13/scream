@@ -165,7 +165,8 @@ function handleStaffLogin(ws, message) {
     ws.staffId = adminId;
     ws.staffRole = 'admin';
     callManager.registerStaff(adminId, ws);
-    ws.send(JSON.stringify({ type: 'login_success', staffId: adminId, role: 'admin', message: 'Welcome to Scream Desk' }));
+    callManager.setStaffStatus(adminId, 'available'); // auto-available on login
+    ws.send(JSON.stringify({ type: 'login_success', staffId: adminId, role: 'admin', message: 'Welcome to Scream Desk', status: 'available' }));
   } else {
     ws.send(JSON.stringify({ type: 'login_error', message: 'Invalid Employee ID or Password' }));
   }

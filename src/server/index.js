@@ -21,6 +21,7 @@ const BUILD_DIR = path.join(process.cwd(), 'client', 'build');
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(BUILD_DIR));
 app.use('/api/auth', authRoutes);
 
 // Health check

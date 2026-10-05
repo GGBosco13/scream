@@ -162,6 +162,11 @@ export default function ScreamConnect() {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
         ],
       });
       peerRef.current = peer;
@@ -169,12 +174,12 @@ export default function ScreamConnect() {
       stream.getTracks().forEach(track => peer.addTrack(track, stream));
 
       peer.onicecandidate = (event) => {
-        if (event.candidate && wsRef.current && wsRef.current.readyState === 1) {
+        // Send ALL candidates including the null (final) candidate
+        if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
           wsRef.current.send(JSON.stringify({
             type: 'ice_candidate',
             callId: callIdRef.current,
-            candidate: event.candidate,
-            target: 'staff',
+            candidate: event.candidate, // can be null (signals ICE gathering complete)
           }));
         }
       };
@@ -183,6 +188,7 @@ export default function ScreamConnect() {
         if (audioRef.current) {
           audioRef.current.srcObject = event.streams[0];
           audioRef.current.muted = false;
+          audioRef.current.play().catch(() => { /* autoplay blocked */ });
         }
       };
 
@@ -321,7 +327,8 @@ export default function ScreamConnect() {
     const peer = peerRef.current;
     if (!peer) return;
     try {
-      await peer.addIceCandidate(new RTCIceCandidate(candidate));
+      // candidate can be null (signals ICE gathering complete) — that's fine
+      await peer.addIceCandidate(candidate ? new RTCIceCandidate(candidate) : null);
     } catch (err) {
       console.error('ScreamConnect handleRemoteIce error:', err);
     }

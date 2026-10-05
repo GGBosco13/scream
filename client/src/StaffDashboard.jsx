@@ -216,10 +216,19 @@ export default function StaffDashboard() {
 
   // WebRTC for staff
   const initStaffPeer = async (callId) => {
+    // Avoid creating duplicate peers
+    if (peerRef.current) {
+      try { peerRef.current.close(); } catch (e) { /* ignore */ }
+    }
     const peer = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject',
+        },
       ],
     });
     peerRef.current = peer;
@@ -237,11 +246,12 @@ export default function StaffDashboard() {
     }
 
     peer.onicecandidate = (event) => {
-      if (event.candidate && wsRef.current && wsRef.current.readyState === 1) {
+      // Send ALL candidates including the null (final) candidate
+      if (wsRef.current && wsRef.current.readyState === 1) {
         wsRef.current.send(JSON.stringify({
           type: 'ice_candidate',
           callId,
-          candidate: event.candidate,
+          candidate: event.candidate, // can be null (signals ICE gathering complete)
         }));
       }
     };
@@ -250,6 +260,7 @@ export default function StaffDashboard() {
       // This fires when the CALLER's audio arrives — play it
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = event.streams[0];
+        remoteAudioRef.current.play().catch(() => { /* autoplay blocked */ });
       }
     };
   };
@@ -286,7 +297,10 @@ export default function StaffDashboard() {
   function handleRemoteIce(candidate) {
     const peer = peerRef.current;
     if (!peer) return;
-    peer.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+    // candidate can be null (signals ICE gathering complete)
+    peer.addIceCandidate(candidate ? new RTCIceCandidate(candidate) : null).catch(err => {
+      console.error('Staff handleRemoteIce error:', err);
+    });
   }
 
   const toggleMute = () => {

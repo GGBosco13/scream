@@ -154,6 +154,9 @@ function handleCallerOffer(ws, message, callManager) {
   if (!call) return;
   const staffWs = callManager.connections.get(`staff:${call.staffId}`);
   if (staffWs && staffWs.readyState === 1) {
+    // Tell staff to prepare their peer (request mic) BEFORE the offer arrives
+    staffWs.send(JSON.stringify({ type: 'prepare_call', callId, callerId: call.callerId }));
+    // Forward the offer immediately
     staffWs.send(JSON.stringify({ type: 'caller_offer', callId, callerId: call.callerId, offer }));
   }
 }

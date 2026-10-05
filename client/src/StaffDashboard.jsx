@@ -102,6 +102,11 @@ export default function StaffDashboard() {
         playAlertSound();
         break;
 
+      case 'prepare_call':
+        // Caller sent an offer — initialize the staff's peer + mic NOW
+        initStaffPeer(data.callId);
+        break;
+
       case 'caller_offer':
         handleCallerOffer(data.callId, data.offer);
         break;
@@ -174,7 +179,7 @@ export default function StaffDashboard() {
     if (wsRef.current && wsRef.current.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: 'accept_call', callId }));
     }
-    await initStaffPeer(callId);
+    // Peer is already initialized from prepare_call, no need to re-init
   };
 
   const endCall = () => {
@@ -250,7 +255,14 @@ export default function StaffDashboard() {
   };
 
   async function handleCallerOffer(callId, offer) {
-    const peer = peerRef.current;
+    // Wait for peer to be ready (initStaffPeer is async due to mic permission)
+    let peer = peerRef.current;
+    let attempts = 0;
+    while (!peer && attempts < 20) {
+      await new Promise(r => setTimeout(r, 100));
+      peer = peerRef.current;
+      attempts++;
+    }
     if (!peer) return;
 
     try {

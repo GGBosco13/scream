@@ -4,8 +4,8 @@ services:
     env: node
     region: oregon
     plan: starter
-    buildCommand: npm run build
-    startCommand: npm start
+    buildCommand: npm i && cd client && npm i && npm run build
+    startCommand: node src/server/index.js
     envVars:
       - key: NODE_ENV
         value: production

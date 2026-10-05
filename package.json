@@ -1,0 +1,35 @@
+{
+  "name": "scream",
+  "version": "1.0.0",
+  "description": "Anonymous Voice Venting Platform",
+  "main": "src/server/index.js",
+  "scripts": {
+    "start": "node src/server/index.js",
+    "dev:server": "nodemon src/server/index.js",
+    "dev:client": "cd client && BROWSER=none PORT=3001 react-scripts start",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "cd client && CI=false react-scripts build",
+    "test": "echo \"No tests specified\" && exit 0",
+    "start:prod": "npm run build && npm start"
+  },
+  "keywords": ["webrtc", "anonymous", "voice", "support"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "ioredis": "^5.3.2",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.0.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "webrtc-adapter": "^9.0.1"
+  }
+}

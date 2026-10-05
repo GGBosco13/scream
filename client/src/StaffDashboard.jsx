@@ -127,7 +127,7 @@ export default function StaffDashboard() {
   // =====================
   const joinDailyRoom = async (roomName) => {
     try {
-      const daily = Daily.createRoom();
+      const daily = new Daily();
       dailyRef.current = daily;
       roomNameRef.current = roomName;
 
@@ -192,7 +192,7 @@ export default function StaffDashboard() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (dailyRef.current) {
       dailyRef.current.leave().catch(() => {});
-      dailyRef.current.close();
+      dailyRef.current.destroy();
       dailyRef.current = null;
     }
     // Clean up the Daily room
@@ -214,7 +214,7 @@ export default function StaffDashboard() {
     const newMuted = !muted;
     setMuted(newMuted);
     if (dailyRef.current) {
-      dailyRef.current.setMutedState('audio', newMuted).catch(() => {});
+      dailyRef.current.updateSendSettings({ audio: !newMuted }).catch(() => {});
     }
   };
 

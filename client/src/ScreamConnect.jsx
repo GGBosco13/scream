@@ -34,7 +34,7 @@ export default function ScreamConnect() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (dailyRef.current) {
       dailyRef.current.leave().catch(() => {});
-      dailyRef.current.close();
+      dailyRef.current.destroy();
       dailyRef.current = null;
     }
     if (wsRef.current) { wsRef.current.close(); wsRef.current = null; }
@@ -80,7 +80,7 @@ export default function ScreamConnect() {
       roomNameRef.current = roomName;
 
       // 3. Create a Daily room and join with mic on
-      const daily = Daily.createRoom();
+      const daily = new Daily();
       dailyRef.current = daily;
       await daily.join(`https://api.daily.co/apps/meetings/rooms/${roomName}`, {
         video: false,

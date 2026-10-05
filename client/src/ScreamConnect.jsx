@@ -35,7 +35,6 @@ export default function ScreamConnect() {
   function cleanup() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (dailyRef.current) {
-      dailyRef.current.leave().catch(() => {});
       dailyRef.current.destroy();
       dailyRef.current = null;
     }
@@ -83,13 +82,25 @@ export default function ScreamConnect() {
       const { roomName, roomUrl, token } = roomData;
       roomNameRef.current = roomName;
 
-      // 3. Join the Daily room with the token
-      const daily = new Daily();
-      dailyRef.current = daily;
-      await daily.join(roomUrl, {
+      // 3. Join the Daily room using createIframe (standard embed)
+      const iframe = Daily.createIframe({
+        url: roomUrl,
         video: false,
         audio: true,
         token,
+        showLobby: false,
+        styles: {
+          content: { display: 'none' },
+        },
+      });
+      dailyRef.current = iframe;
+      // Wait for the iframe to be ready
+      await new Promise((resolve) => {
+        iframe.addEventListener('participant-joined', (e) => {
+          if (e.participant?.isLocal) resolve();
+        });
+        // Fallback: resolve after 3s
+        setTimeout(resolve, 3000);
       });
 
       // 3. Connect WebSocket for signaling (queue + routing)

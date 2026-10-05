@@ -138,14 +138,25 @@ export default function StaffDashboard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to get room access');
 
-      const daily = new Daily();
-      dailyRef.current = daily;
-      roomNameRef.current = roomName;
-
-      await daily.join(data.roomUrl, {
+      const iframe = Daily.createIframe({
+        url: data.roomUrl,
         video: false,
         audio: true,
         token: data.token,
+        showLobby: false,
+        styles: {
+          content: { display: 'none' },
+        },
+      });
+      dailyRef.current = iframe;
+      roomNameRef.current = roomName;
+
+      // Wait for iframe to be ready
+      await new Promise((resolve) => {
+        iframe.addEventListener('participant-joined', (e) => {
+          if (e.participant?.isLocal) resolve();
+        });
+        setTimeout(resolve, 3000);
       });
 
       setCurrentCallId(roomName);
@@ -203,7 +214,6 @@ export default function StaffDashboard() {
   const endLocalCall = () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (dailyRef.current) {
-      dailyRef.current.leave().catch(() => {});
       dailyRef.current.destroy();
       dailyRef.current = null;
     }
@@ -226,7 +236,11 @@ export default function StaffDashboard() {
     const newMuted = !muted;
     setMuted(newMuted);
     if (dailyRef.current) {
-      dailyRef.current.updateSendSettings({ audio: !newMuted }).catch(() => {});
+      // iframe API: use the daily object inside
+      const daily = dailyRef.current.daily;
+      if (daily) {
+        daily.updateSendSettings({ audio: !newMuted }).catch(() => {});
+      }
     }
   };
 

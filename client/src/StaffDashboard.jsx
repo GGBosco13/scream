@@ -223,9 +223,9 @@ export default function StaffDashboard() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       callerStreamRef.current = stream;
       stream.getTracks().forEach(track => peer.addTrack(track, stream));
-
+      // Remote audio element starts with NO source (only plays caller's audio)
       if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.srcObject = null;
       }
     } catch (err) {
       console.error('Staff: Mic access denied', err);
@@ -242,13 +242,11 @@ export default function StaffDashboard() {
     };
 
     peer.ontrack = (event) => {
+      // This fires when the CALLER's audio arrives — play it
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = event.streams[0];
       }
     };
-
-    // Create and send answer if we haven't already
-    // The staff receives the caller's offer and sends an answer
   };
 
   async function handleCallerOffer(callId, offer) {
@@ -260,23 +258,13 @@ export default function StaffDashboard() {
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
 
-      const sendAnswer = () => {
-        if (wsRef.current && wsRef.current.readyState === 1) {
-          wsRef.current.send(JSON.stringify({
-            type: 'send_answer',
-            callId,
-            answer: peer.localDescription,
-          }));
-        }
-      };
-
-      if (peer.iceGatheringState === 'complete') {
-        sendAnswer();
-      } else {
-        peer.onicegatheringstatechange = () => {
-          if (peer.iceGatheringState === 'complete') sendAnswer();
-        };
-        setTimeout(sendAnswer, 1000);
+      // Send answer immediately (trickle ICE handles candidates separately)
+      if (wsRef.current && wsRef.current.readyState === 1) {
+        wsRef.current.send(JSON.stringify({
+          type: 'send_answer',
+          callId,
+          answer: peer.localDescription,
+        }));
       }
     } catch (err) {
       console.error('Staff handleCallerOffer error:', err);

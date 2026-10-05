@@ -143,9 +143,9 @@ export default function ScreamConnect() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = stream;
 
-      // Set up audio element
+      // Audio element starts muted with NO source (only plays remote audio)
       if (audioRef.current) {
-        audioRef.current.srcObject = stream;
+        audioRef.current.srcObject = null;
         audioRef.current.muted = true;
       }
 
@@ -296,25 +296,13 @@ export default function ScreamConnect() {
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
 
-    // Wait for ICE gathering to complete (or use trickle)
-    const sendOffer = () => {
-      if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
-        wsRef.current.send(JSON.stringify({
-          type: 'create_offer',
-          callId: callIdRef.current,
-          offer: peer.localDescription,
-        }));
-      }
-    };
-
-    if (peer.iceGatheringState === 'complete') {
-      sendOffer();
-    } else {
-      peer.onicegatheringstatechange = () => {
-        if (peer.iceGatheringState === 'complete') sendOffer();
-      };
-      // Fallback: send after 1 second even if gathering isn't complete
-      setTimeout(sendOffer, 1000);
+    // Send offer immediately (trickle ICE handles candidates separately)
+    if (wsRef.current && wsRef.current.readyState === 1 && callIdRef.current) {
+      wsRef.current.send(JSON.stringify({
+        type: 'create_offer',
+        callId: callIdRef.current,
+        offer: peer.localDescription,
+      }));
     }
   }
 

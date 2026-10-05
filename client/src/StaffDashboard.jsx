@@ -6,8 +6,10 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import Daily from '@daily-co/daily-js';
 import './StaffDashboard.css';
+
+// Daily SDK exposes itself as window.Daily in the browser
+const Daily = window.Daily;
 
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 const API_URL = process.env.REACT_APP_API_URL || '';

@@ -7,8 +7,10 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import Daily from '@daily-co/daily-js';
 import './ScreamConnect.css';
+
+// Daily SDK exposes itself as window.Daily in the browser
+const Daily = window.Daily;
 
 const API_URL = process.env.REACT_APP_API_URL || '';
 

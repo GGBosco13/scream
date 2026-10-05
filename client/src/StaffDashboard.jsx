@@ -1,9 +1,12 @@
 /**
  * StaffDashboard – Professional dispatch dashboard for support staff.
  * Includes login, status toggle, incoming call alerts, and active call controls.
+ *
+ * Audio: Daily.co handles all WebRTC, NAT traversal, and TURN relay.
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import Daily from '@daily-co/daily-js';
 import './StaffDashboard.css';
 
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
@@ -17,7 +20,6 @@ export default function StaffDashboard() {
 
   // Dashboard state
   const [status, setStatus] = useState('away'); // available | away
-  const [activeCalls, setActiveCalls] = useState([]);
   const [incomingCall, setIncomingCall] = useState(null);
   const [currentCallId, setCurrentCallId] = useState(null);
   const [currentCallDuration, setCurrentCallDuration] = useState(0);
@@ -26,18 +28,18 @@ export default function StaffDashboard() {
   const [adminEmployeeId, setAdminEmployeeId] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminResult, setAdminResult] = useState(null);
-  const [callTimer, setCallTimer] = useState(0);
+  const [muted, setMuted] = useState(false);
 
-  // WebRTC
-  const peerRef = useRef(null);
-  const remoteAudioRef = useRef(null);
+  // Daily.co + WebSocket refs
+  const dailyRef = useRef(null);
   const wsRef = useRef(null);
   const durationRef = useRef(0);
   const timerRef = useRef(null);
-  const callerStreamRef = useRef(null);
-  const [muted, setMuted] = useState(false);
+  const roomNameRef = useRef(null);
 
-  // Handle login
+  // =====================
+  // LOGIN
+  // =====================
   const handleLogin = async () => {
     setLoginError('');
     try {
@@ -59,6 +61,9 @@ export default function StaffDashboard() {
     }
   };
 
+  // =====================
+  // WEBSOCKET (signaling only – Daily handles audio)
+  // =====================
   const connectWs = () => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -73,7 +78,6 @@ export default function StaffDashboard() {
     };
 
     ws.onclose = () => {
-      // Auto-reconnect
       setTimeout(() => {
         if (authState === 'dashboard') connectWs();
       }, 3000);
@@ -83,7 +87,6 @@ export default function StaffDashboard() {
   function handleWsMessage(data) {
     switch (data.type) {
       case 'login_success':
-        // Use status from server response, or default to available
         setStatus(data.status || 'available');
         break;
 
@@ -95,31 +98,11 @@ export default function StaffDashboard() {
         setIncomingCall({
           callId: data.callId,
           callerId: data.callerId,
+          roomName: data.callId, // Daily room name = callId
           message: data.message || 'Anonymous caller is waiting...',
           timestamp: Date.now(),
         });
-        // Play alert sound
         playAlertSound();
-        break;
-
-      case 'prepare_call':
-        // Caller sent an offer — initialize the staff's peer + mic NOW
-        initStaffPeer(data.callId);
-        break;
-
-      case 'caller_offer':
-        handleCallerOffer(data.callId, data.offer);
-        break;
-
-      case 'call_accepted_confirmed':
-        setIncomingCall(null);
-        setCurrentCallId(data.callId);
-        setCurrentCallDuration(0);
-        durationRef.current = 0;
-        timerRef.current = setInterval(() => {
-          durationRef.current++;
-          setCurrentCallDuration(durationRef.current);
-        }, 1000);
         break;
 
       case 'call_accepted':
@@ -127,20 +110,11 @@ export default function StaffDashboard() {
         break;
 
       case 'call_ended':
-        endLocalCall();
+        endCall();
         break;
 
       case 'call_declined':
         setIncomingCall(null);
-        break;
-
-      case 'ice_candidate':
-        handleRemoteIce(data.candidate);
-        break;
-
-      case 'staff_status_change':
-        // Refresh staff list
-        loadStaffList();
         break;
 
       default:
@@ -148,7 +122,36 @@ export default function StaffDashboard() {
     }
   }
 
-  // Staff actions
+  // =====================
+  // DAILY.CO – JOIN ROOM
+  // =====================
+  const joinDailyRoom = async (roomName) => {
+    try {
+      const daily = Daily.createRoom();
+      dailyRef.current = daily;
+      roomNameRef.current = roomName;
+
+      await daily.join(
+        `https://api.daily.co/apps/meetings/rooms/${roomName}`,
+        { video: false, audio: true }
+      );
+
+      setCurrentCallId(roomName);
+      setCurrentCallDuration(0);
+      durationRef.current = 0;
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        durationRef.current++;
+        setCurrentCallDuration(durationRef.current);
+      }, 1000);
+    } catch (err) {
+      console.error('Staff: Failed to join Daily room', err);
+    }
+  };
+
+  // =====================
+  // STAFF ACTIONS
+  // =====================
   const toggleStatus = () => {
     const newStatus = status === 'available' ? 'away' : 'available';
     setStatus(newStatus);
@@ -159,13 +162,16 @@ export default function StaffDashboard() {
 
   const acceptCall = async () => {
     if (!incomingCall) return;
+    const roomName = incomingCall.roomName;
+    setIncomingCall(null);
 
+    // Notify server
     if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: 'accept_call', callId: incomingCall.callId }));
+      wsRef.current.send(JSON.stringify({ type: 'accept_call', callId: roomName }));
     }
 
-    // Start WebRTC on staff side
-    await initStaffPeer(incomingCall.callId);
+    // Join the Daily room
+    await joinDailyRoom(roomName);
   };
 
   const declineCall = () => {
@@ -173,13 +179,6 @@ export default function StaffDashboard() {
       wsRef.current.send(JSON.stringify({ type: 'decline_call', callId: incomingCall?.callId }));
     }
     setIncomingCall(null);
-  };
-
-  const handleCall = async (callId) => {
-    if (wsRef.current && wsRef.current.readyState === 1) {
-      wsRef.current.send(JSON.stringify({ type: 'accept_call', callId }));
-    }
-    // Peer is already initialized from prepare_call, no need to re-init
   };
 
   const endCall = () => {
@@ -191,128 +190,37 @@ export default function StaffDashboard() {
 
   const endLocalCall = () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    if (peerRef.current) {
-      try {
-        // Stop both local and remote tracks
-        peerRef.current.getSenders().forEach(s => s.track && s.track.stop());
-        peerRef.current.getReceivers().forEach(r => r.track && r.track.stop());
-        peerRef.current.close();
-      } catch (e) { /* already closed */ }
-      peerRef.current = null;
+    if (dailyRef.current) {
+      dailyRef.current.leave().catch(() => {});
+      dailyRef.current.close();
+      dailyRef.current = null;
     }
-    if (callerStreamRef.current) {
-      callerStreamRef.current.getTracks().forEach(t => t.stop());
-      callerStreamRef.current = null;
-    }
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = null;
+    // Clean up the Daily room
+    if (roomNameRef.current) {
+      fetch(`${API_URL}/api/daily/leave-room`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomName: roomNameRef.current }),
+      }).catch(() => {});
+      roomNameRef.current = null;
     }
     setCurrentCallId(null);
     setCurrentCallDuration(0);
-    setCallTimer(0);
     durationRef.current = 0;
     setMuted(false);
   };
 
-  // WebRTC for staff
-  const initStaffPeer = async (callId) => {
-    // Avoid creating duplicate peers
-    if (peerRef.current) {
-      try { peerRef.current.close(); } catch (e) { /* ignore */ }
-    }
-    const peer = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelayproject',
-          credential: 'openrelayproject',
-        },
-      ],
-    });
-    peerRef.current = peer;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      callerStreamRef.current = stream;
-      stream.getTracks().forEach(track => peer.addTrack(track, stream));
-      // Remote audio element starts with NO source (only plays caller's audio)
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = null;
-      }
-    } catch (err) {
-      console.error('Staff: Mic access denied', err);
-    }
-
-    peer.onicecandidate = (event) => {
-      // Send ALL candidates including the null (final) candidate
-      if (wsRef.current && wsRef.current.readyState === 1) {
-        wsRef.current.send(JSON.stringify({
-          type: 'ice_candidate',
-          callId,
-          candidate: event.candidate, // can be null (signals ICE gathering complete)
-        }));
-      }
-    };
-
-    peer.ontrack = (event) => {
-      // This fires when the CALLER's audio arrives — play it
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = event.streams[0];
-        remoteAudioRef.current.play().catch(() => { /* autoplay blocked */ });
-      }
-    };
-  };
-
-  async function handleCallerOffer(callId, offer) {
-    // Wait for peer to be ready (initStaffPeer is async due to mic permission)
-    let peer = peerRef.current;
-    let attempts = 0;
-    while (!peer && attempts < 20) {
-      await new Promise(r => setTimeout(r, 100));
-      peer = peerRef.current;
-      attempts++;
-    }
-    if (!peer) return;
-
-    try {
-      await peer.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-
-      // Send answer immediately (trickle ICE handles candidates separately)
-      if (wsRef.current && wsRef.current.readyState === 1) {
-        wsRef.current.send(JSON.stringify({
-          type: 'send_answer',
-          callId,
-          answer: peer.localDescription,
-        }));
-      }
-    } catch (err) {
-      console.error('Staff handleCallerOffer error:', err);
-    }
-  }
-
-  function handleRemoteIce(candidate) {
-    const peer = peerRef.current;
-    if (!peer) return;
-    // candidate can be null (signals ICE gathering complete)
-    peer.addIceCandidate(candidate ? new RTCIceCandidate(candidate) : null).catch(err => {
-      console.error('Staff handleRemoteIce error:', err);
-    });
-  }
-
   const toggleMute = () => {
     const newMuted = !muted;
     setMuted(newMuted);
-    if (callerStreamRef.current) {
-      callerStreamRef.current.getAudioTracks().forEach(t => {
-        t.enabled = !newMuted;
-      });
+    if (dailyRef.current) {
+      dailyRef.current.setMutedState('audio', newMuted).catch(() => {});
     }
   };
 
+  // =====================
+  // STAFF MANAGEMENT
+  // =====================
   const loadStaffList = async () => {
     try {
       const res = await fetch(`${API_URL}/api/auth/staff-list`);
@@ -326,11 +234,7 @@ export default function StaffDashboard() {
       const res = await fetch(`${API_URL}/api/auth/admin/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          employeeId: adminEmployeeId,
-          password: adminPassword,
-          role: 'staff',
-        }),
+        body: JSON.stringify({ employeeId: adminEmployeeId, password: adminPassword, role: 'staff' }),
       });
       const data = await res.json();
       if (data.success) {
@@ -419,9 +323,7 @@ export default function StaffDashboard() {
                 placeholder="Enter your password"
               />
             </div>
-            <button className="btn-login" onClick={handleLogin}>
-              Sign In
-            </button>
+            <button className="btn-login" onClick={handleLogin}>Sign In</button>
           </div>
         </div>
       </div>
@@ -433,9 +335,6 @@ export default function StaffDashboard() {
   // =====================
   return (
     <div className="staff-dashboard">
-      <audio ref={remoteAudioRef} autoPlay playsInline />
-
-      {/* Top Bar */}
       <header className="dashboard-header">
         <div className="logo-small">
           <span className="logo-dot" />
@@ -443,16 +342,11 @@ export default function StaffDashboard() {
           <span className="logo-sub">DESK</span>
         </div>
         <div className="header-right">
-          <button
-            className={`status-toggle ${status}`}
-            onClick={toggleStatus}
-          >
+          <button className={`status-toggle ${status}`} onClick={toggleStatus}>
             <span className={`status-dot ${status}`} />
             {status === 'available' ? 'Available' : 'Away'}
           </button>
-          <button className="btn-staff-list" onClick={() => setShowStaffModal(true)}>
-            👥 Staff
-          </button>
+          <button className="btn-staff-list" onClick={() => setShowStaffModal(true)}>👥 Staff</button>
           <button className="btn-logout" onClick={() => {
             if (wsRef.current) wsRef.current.close();
             setAuthState('login');
@@ -463,7 +357,6 @@ export default function StaffDashboard() {
       </header>
 
       <div className="dashboard-body">
-        {/* Left: Active Calls */}
         <section className="panel active-calls-panel">
           <h3>Active Calls</h3>
           {currentCallId ? (
@@ -488,14 +381,11 @@ export default function StaffDashboard() {
           )}
         </section>
 
-        {/* Right: Queue Status */}
         <section className="panel queue-panel">
           <h3>Queue Status</h3>
           <div className="queue-stats">
             <div className="stat-card">
-              <span className="stat-value">
-                {status === 'available' ? '🟢' : '🔴'}
-              </span>
+              <span className="stat-value">{status === 'available' ? '🟢' : '🔴'}</span>
               <span className="stat-label">Your Status</span>
               <span className="stat-text">{status}</span>
             </div>
@@ -513,7 +403,7 @@ export default function StaffDashboard() {
             <p className="modal-message">{incomingCall.message}</p>
             <div className="modal-actions">
               <button className="btn-decline" onClick={declineCall}>Decline</button>
-              <button className="btn-accept" onClick={() => handleCall(incomingCall.callId)}>Accept</button>
+              <button className="btn-accept" onClick={acceptCall}>Accept</button>
             </div>
           </div>
         </div>
@@ -527,34 +417,22 @@ export default function StaffDashboard() {
               <h3>Staff Management</h3>
               <button className="btn-close" onClick={() => setShowStaffModal(false)}>✕</button>
             </div>
-
-            {/* Create new staff */}
             <div className="create-staff">
               <h4>Create New Staff</h4>
               <div className="form-row">
-                <input
-                  type="text"
-                  placeholder="Employee ID"
-                  value={adminEmployeeId}
-                  onChange={e => setAdminEmployeeId(e.target.value)}
-                />
-                <input
-                  type="text"
-                  placeholder="Temporary Password"
-                  value={adminPassword}
-                  onChange={e => setAdminPassword(e.target.value)}
-                />
+                <input type="text" placeholder="Employee ID" value={adminEmployeeId}
+                  onChange={e => setAdminEmployeeId(e.target.value)} />
+                <input type="text" placeholder="Temporary Password" value={adminPassword}
+                  onChange={e => setAdminPassword(e.target.value)} />
                 <button className="btn-create" onClick={createStaff}>Create</button>
               </div>
-              {adminResult && !adminResult.error && (
+              {adminResult?.success && (
                 <div className="create-success">
                   ✓ Created: {adminResult.employeeId} / {adminResult.temporaryPassword}
                 </div>
               )}
               {adminResult?.error && <div className="create-error">{adminResult.error}</div>}
             </div>
-
-            {/* Staff List */}
             <div className="staff-list">
               <h4>Registered Staff</h4>
               {staffList.map(s => (
@@ -567,7 +445,6 @@ export default function StaffDashboard() {
                     <span className={`staff-active ${s.active ? 'active' : 'inactive'}`}>
                       {s.active ? 'Active' : 'Disabled'}
                     </span>
-                    {!s.active && <button className="btn-reenable" onClick={() => disableStaff(s.employeeId)}>—</button>}
                   </div>
                 </div>
               ))}

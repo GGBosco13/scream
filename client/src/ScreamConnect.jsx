@@ -50,21 +50,41 @@ export default function ScreamConnect() {
   const startCall = async () => {
     cleanup();
     setStatus('connecting');
-    setStatusMessage('Establishing anonymous connection...');
+    setStatusMessage('Requesting microphone access...');
 
     try {
-      // 1. Request a room from the server
+      // 1. Request mic permission explicitly (gives clear browser prompt)
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Stop the tracks immediately — Daily will re-request when joining
+        stream.getTracks().forEach(t => t.stop());
+      } catch (micErr) {
+        console.error('Mic permission error:', micErr);
+        setStatus('ended');
+        if (micErr.name === 'NotAllowedError' || micErr.name === 'PermissionDeniedError') {
+          setStatusMessage('Microphone access denied. Please allow mic access in your browser settings and try again.');
+        } else if (micErr.name === 'NotFoundError') {
+          setStatusMessage('No microphone found. Please connect a microphone and try again.');
+        } else {
+          setStatusMessage(`Microphone error: ${micErr.message}. Please check your mic and try again.`);
+        }
+        return;
+      }
+
+      setStatus('connecting');
+      setStatusMessage('Establishing anonymous connection...');
+
+      // 2. Request a room from the server
       const res = await fetch(`${API_URL}/api/daily/join-room`, { method: 'POST' });
       const { roomName } = await res.json();
       roomNameRef.current = roomName;
 
-      // 2. Create a Daily room and join with mic on
+      // 3. Create a Daily room and join with mic on
       const daily = Daily.createRoom();
       dailyRef.current = daily;
       await daily.join(`https://api.daily.co/apps/meetings/rooms/${roomName}`, {
         video: false,
         audio: true,
-        // Don't show Daily's default UI
       });
 
       // 3. Connect WebSocket for signaling (queue + routing)
@@ -95,9 +115,15 @@ export default function ScreamConnect() {
       };
 
     } catch (err) {
-      setStatus('ended');
-      setStatusMessage('Microphone access denied. Please allow mic access and try again.');
       console.error('ScreamConnect startCall error:', err);
+      setStatus('ended');
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setStatusMessage('Microphone access denied. Please allow mic access in your browser settings and try again.');
+      } else if (err.message && err.message.includes('join')) {
+        setStatusMessage('Failed to join call room. Please try again.');
+      } else {
+        setStatusMessage(`Connection error: ${err.message || err.name || 'Unknown'}. Please try again.`);
+      }
     }
   };
 

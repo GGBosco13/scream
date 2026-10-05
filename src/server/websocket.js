@@ -236,11 +236,23 @@ function handleStaffAnswer(ws, message, callManager) {
 function handleEnd(ws, message, callManager, redisClient) {
   const { callId } = message;
   const call = callManager.activeCalls.get(callId);
-  if (call) {
-    callManager.endCall(callId);
-    if (redisClient && redisClient.cleanupCallerSession) {
-      redisClient.cleanupCallerSession(call.callerId);
-    }
+  if (!call) return;
+
+  callManager.endCall(callId);
+
+  if (redisClient && redisClient.cleanupCallerSession) {
+    redisClient.cleanupCallerSession(call.callerId);
+  }
+
+  // Notify BOTH the caller and the staff that the call ended
+  const callerWs = callManager.connections.get(`caller:${call.callerId}`);
+  if (callerWs && callerWs.readyState === 1 && ws !== callerWs) {
+    callerWs.send(JSON.stringify({ type: 'call_ended', callId }));
+  }
+
+  const staffWs = callManager.connections.get(`staff:${call.staffId}`);
+  if (staffWs && staffWs.readyState === 1 && ws !== staffWs) {
+    staffWs.send(JSON.stringify({ type: 'call_ended', callId }));
   }
 }
 

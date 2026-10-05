@@ -241,16 +241,8 @@ export default function ScreamConnect() {
         if (data.answer) {
           handleAnswer(data.answer);
         } else {
-          // Staff accepted, connection is live
-          setStatus('calling');
-          setStatusMessage('Connected with a support agent.');
-          durationRef.current = 0;
-          setCallDuration(0);
-          if (timerRef.current) clearInterval(timerRef.current);
-          timerRef.current = setInterval(() => {
-            durationRef.current++;
-            setCallDuration(durationRef.current);
-          }, 1000);
+          // Staff accepted, but WebRTC answer still pending
+          setStatusMessage('Agent is connecting...');
         }
         break;
 

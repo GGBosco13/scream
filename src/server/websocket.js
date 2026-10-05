@@ -92,7 +92,14 @@ async function handleCallerJoin(ws, message, callManager, redisClient) {
   callManager.connections.set(`caller:${callerId}`, ws);
   await callManager.joinQueue(callerId);
   ws.callerId = callerId;
-  callerId = callerId; // capture for close handler
+
+  // Always confirm queue position to the caller
+  ws.send(JSON.stringify({
+    type: 'queued',
+    sessionId: callerId,
+    position: 1,
+    message: 'You are in the queue. Waiting for an available agent...',
+  }));
 
   // Try to route immediately
   setTimeout(() => tryRoute(callerId, callManager, ws, redisClient), 500);
